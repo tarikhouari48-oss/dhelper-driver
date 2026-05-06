@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "1090312204935",
+    "project_id": "repartidor-app-b2757",
+    "storage_bucket": "repartidor-app-b2757.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1090312204935:android:00487d79a19861e9fffe22",
+        "android_client_info": {
+          "package_name": "com.repartidor.driver_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAyPRwYIkqHNpQkxiyMfr03Ld-Y06n5ZsU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1090312204935:android:c850e146915c8226fffe22",
+        "android_client_info": {
+          "package_name": "com.repartidor.operator_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAyPRwYIkqHNpQkxiyMfr03Ld-Y06n5ZsU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
