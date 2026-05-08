@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { margin: 0; padding: 0; }
+html, body, #map { width: 100%; height: 100%; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+var p = new URLSearchParams(location.search);
+var lat   = parseFloat(p.get('lat')   || '41.3917');
+var lng   = parseFloat(p.get('lng')   || '2.1649');
+var zoom  = parseInt(p.get('zoom')    || '14');
+var color = p.get('color')            || '#2563EB';
+
+var map = L.map('map', {
+  center: [lat, lng], zoom: zoom,
+  zoomControl: false, attributionControl: false
+});
+
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+var restMarker = null;
+var restCircle = null;
+
+function setRestaurant(rLat, rLng, rAddress) {
+  if (restMarker) map.removeLayer(restMarker);
+  if (restCircle) map.removeLayer(restCircle);
+  restCircle = L.circle([rLat, rLng], {
+    radius: 500, color: color, fillColor: color, fillOpacity: 0.12, weight: 2
+  }).addTo(map);
+  var icon = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;background:' + color + ';border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.4);cursor:pointer"></div>',
+    iconSize: [22,22], iconAnchor: [11,11]
+  });
+  restMarker = L.marker([rLat, rLng], {icon: icon}).addTo(map);
+  var dest = rAddress || (rLat + ',' + rLng);
+  restMarker.on('click', function() {
+    window.open('https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(dest) + '&travelmode=driving', '_blank');
+  });
+}
+
+setRestaurant(lat, lng, '');
+
+var dynMarkers = {};
+
+window.addEventListener('message', function(e) {
+  var d;
+  try { d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch(ex) { return; }
+  if (!d || !d.type) return;
+
+  if (d.type === 'setRestaurant') {
+    setRestaurant(d.lat || lat, d.lng || lng, d.address || '');
+    map.flyTo([d.lat || lat, d.lng || lng], d.zoom || zoom);
+  }
+
+  if (d.type === 'setMarkers') {
+    Object.values(dynMarkers).forEach(function(m) { map.removeLayer(m); });
+    dynMarkers = {};
+    (d.markers || []).forEach(function(m, i) {
+      var c = m.color || '#EF4444';
+      var icon = L.divIcon({
+        className: '',
+        html: '<div style="display:flex;flex-direction:column;align-items:center">'
+            + '<div style="width:18px;height:18px;background:' + c
+            + ';border-radius:50%;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4)"></div>'
+            + (m.label ? '<div style="background:white;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:bold;color:' + c
+            + ';white-space:nowrap;margin-top:2px;box-shadow:0 1px 3px rgba(0,0,0,0.2)">' + m.label + '</div>' : '')
+            + '</div>',
+        iconSize: [60,36], iconAnchor: [30,9]
+      });
+      dynMarkers[i] = L.marker([m.lat, m.lng], {icon: icon}).addTo(map);
+    });
+  }
+
+  if (d.type === 'flyTo') {
+    map.flyTo([d.lat, d.lng], d.zoom || zoom);
+  }
+});
+</script>
+</body>
+</html>

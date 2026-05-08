@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../orders/providers/orders_provider.dart';
 import 'tab_accueil.dart';
@@ -17,7 +16,6 @@ class MapScreen extends ConsumerStatefulWidget {
 
 class _MapScreenState extends ConsumerState<MapScreen> {
   int _selectedIndex = 1; // Start on Livraisons
-  final _mapController = MapController();
 
   @override
   void initState() {
@@ -33,7 +31,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         index: _selectedIndex,
         children: [
           const AccueilTab(),
-          LivraisonsTab(mapController: _mapController),
+          const LivraisonsTab(),
           const ProfilTab(),
         ],
       ),

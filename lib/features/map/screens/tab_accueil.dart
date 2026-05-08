@@ -1,23 +1,23 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const _blue = Color(0xFF2563EB);
-const _dbUrl = 'https://d-helper-f1331-default-rtdb.firebaseio.com';
 
 final _restaurantInfoProvider = FutureProvider<Map<String, String>>((ref) async {
   try {
-    final res = await http.get(Uri.parse('$_dbUrl/settings/restaurant.json'))
-        .timeout(const Duration(seconds: 8));
-    if (res.statusCode == 200 && res.body != 'null') {
-      final m = Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+    final rows = await Supabase.instance.client
+        .from('restaurant_settings')
+        .select()
+        .eq('id', 'restaurant');
+    if ((rows as List).isNotEmpty) {
+      final r = rows.first as Map<String, dynamic>;
       return {
-        'name':    m['name']?.toString()    ?? 'D-helper Restaurant',
-        'address': m['address']?.toString() ?? '',
-        'phone':   m['phone']?.toString()   ?? '',
-        'hours':   m['hours']?.toString()   ?? '',
+        'name':    r['name']?.toString()    ?? 'D-helper Restaurant',
+        'address': r['address']?.toString() ?? '',
+        'phone':   r['phone']?.toString()   ?? '',
+        'hours':   r['hours']?.toString()   ?? '',
       };
     }
   } catch (_) {}

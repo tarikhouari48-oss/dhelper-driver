@@ -1,12 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' show sqrt;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/order_model.dart';
 import '../models/driver_model.dart';
-
-const _dbUrl = 'https://d-helper-f1331-default-rtdb.firebaseio.com';
 
 final firebaseServiceProvider =
     Provider<DriverFirebaseService>((ref) => DriverFirebaseService());
@@ -21,9 +18,10 @@ class DailyStats {
   const DailyStats({this.pedidos = 0, this.earnings = 0});
 }
 
-// Restaurant location — Carrer de Provença 78, Barcelona
 const _restLat = 41.3917;
 const _restLng = 2.1649;
+
+SupabaseClient get _db => Supabase.instance.client;
 
 double _distFromRestaurant(OrderModel o) {
   if (o.deliveryLat == null || o.deliveryLng == null) return 99999;
@@ -33,15 +31,15 @@ double _distFromRestaurant(OrderModel o) {
 }
 
 class DriverFirebaseService {
-  // --- HTTP client ---
-  final _client = http.Client();
-
-  // --- Auth ---
-  final _accounts = <String, Map<String, String>>{}; // email → {password, driverId}
-  final _driverAccounts = <String, DriverModel>{}; // driverId → DriverModel
+  // --- Auth (mock passwords, Supabase profiles) ---
+  final _accounts = <String, Map<String, String>>{};
 
   DriverFirebaseService() {
-    const demo = DriverModel(
+    _accounts['demo@dhelper.com'] = {'password': '123456', 'driverId': 'driver-demo'};
+    _accounts['ahmed@dhelper.com'] = {'password': 'ahmed123', 'driverId': 'drv-seed-1'};
+    _accounts['juan@dhelper.com'] = {'password': 'juan123', 'driverId': 'drv-seed-2'};
+    _accounts['maria@dhelper.com'] = {'password': 'maria123', 'driverId': 'drv-seed-3'};
+    _driver = const DriverModel(
       id: 'driver-demo',
       name: 'Demo Rider',
       email: 'demo@dhelper.com',
@@ -49,17 +47,52 @@ class DriverFirebaseService {
       vehicleType: VehicleType.motorcycle,
       isOnline: false,
     );
-    _accounts['demo@dhelper.com'] = {'password': '123456', 'driverId': 'driver-demo'};
-    _driverAccounts['driver-demo'] = demo;
-    _driver = demo;
+    _ensureDemoDriverInSupabase();
+  }
+
+  Future<void> _ensureDemoDriverInSupabase() async {
+    try {
+      await _db.from('drivers').upsert({
+        'id':               'driver-demo',
+        'name':             'Demo Rider',
+        'email':            'demo@dhelper.com',
+        'phone':            '+34 600 000 000',
+        'vehicle_type':     'motorcycle',
+        'is_online':        false,
+        'today_deliveries': 0,
+        'today_earnings':   0.0,
+      });
+    } catch (_) {}
   }
 
   DriverModel? login(String email, String password) {
     final acc = _accounts[email.toLowerCase()];
     if (acc == null || acc['password'] != password) return null;
-    final driver = _driverAccounts[acc['driverId']!]!;
-    _driver = driver;
-    return driver;
+    final driverId = acc['driverId']!;
+    _driver = _driver.copyWith(isOnline: _driver.isOnline);
+    _loadDriverFromSupabase(driverId);
+    return _driver;
+  }
+
+  Future<void> _loadDriverFromSupabase(String driverId) async {
+    try {
+      final rows = await _db.from('drivers').select().eq('id', driverId);
+      if ((rows as List).isNotEmpty) {
+        final r = rows.first as Map<String, dynamic>;
+        _driver = DriverModel(
+          id: r['id']?.toString() ?? driverId,
+          name: r['name']?.toString() ?? _driver.name,
+          email: r['email']?.toString() ?? _driver.email,
+          phone: r['phone']?.toString() ?? _driver.phone,
+          vehicleType: r['vehicle_type'] == 'motorcycle'
+              ? VehicleType.motorcycle
+              : VehicleType.bike,
+          isOnline: r['is_online'] as bool? ?? false,
+          lat: (r['lat'] as num?)?.toDouble(),
+          lng: (r['lng'] as num?)?.toDouble(),
+        );
+      }
+    } catch (_) {}
   }
 
   DriverModel? registerDriver({
@@ -81,8 +114,17 @@ class DriverFirebaseService {
       isOnline: false,
     );
     _accounts[key] = {'password': password, 'driverId': id};
-    _driverAccounts[id] = driver;
     _driver = driver;
+    _db.from('drivers').upsert({
+      'id':               id,
+      'name':             name,
+      'email':            key,
+      'phone':            phone,
+      'vehicle_type':     vehicleType.name,
+      'is_online':        false,
+      'today_deliveries': 0,
+      'today_earnings':   0.0,
+    });
     return driver;
   }
 
@@ -91,6 +133,14 @@ class DriverFirebaseService {
   DailyStats _dailyStats = const DailyStats();
   DateTime _statsDate = DateTime.now();
 
+  void _checkResetDay() {
+    final now = DateTime.now();
+    if (now.day != _statsDate.day || now.month != _statsDate.month) {
+      _dailyStats = const DailyStats();
+      _statsDate = now;
+    }
+  }
+
   // --- Driver ---
   late DriverModel _driver;
 
@@ -98,7 +148,7 @@ class DriverFirebaseService {
   static const double restaurantLat = _restLat;
   static const double restaurantLng = _restLng;
 
-  // --- Cached active orders for sync accessors ---
+  // --- Cached active orders ---
   List<OrderModel> _cachedActive = [];
 
   List<OrderModel> get sortedActiveOrders => List.from(_cachedActive)
@@ -117,56 +167,38 @@ class DriverFirebaseService {
   bool get hasPendingRecogida => _cachedActive.any(
       (o) => o.status == OrderStatus.accepted || o.status == OrderStatus.ready);
 
-  // --- Helpers ---
-  void _checkResetDay() {
-    final now = DateTime.now();
-    if (now.day != _statsDate.day || now.month != _statsDate.month) {
-      _dailyStats = const DailyStats();
-      _statsDate = now;
-    }
-  }
-
   // --- Streams ---
 
-  Future<List<OrderModel>> _fetchOrders() async {
-    try {
-      final res = await _client
-          .get(Uri.parse('$_dbUrl/orders.json'))
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200 && res.body != 'null') {
-        final map = Map<String, dynamic>.from(jsonDecode(res.body) as Map);
-        return map.entries.map((e) {
-          final m = Map<String, dynamic>.from(e.value as Map);
-          if (m['id'] == null || (m['id'] as String).isEmpty) m['id'] = e.key;
-          return OrderModel.fromMap(m);
-        }).toList();
-      }
-    } catch (_) {}
-    return [];
+  Stream<List<OrderModel>> watchAvailableOrders() {
+    return _db
+        .from('orders')
+        .stream(primaryKey: ['id'])
+        .map((rows) => rows
+            .map((r) => OrderModel.fromSupabase(r))
+            .where((o) =>
+                (o.status == OrderStatus.ready ||
+                    o.status == OrderStatus.accepted) &&
+                o.driverId == null)
+            .toList());
   }
 
-  Stream<List<OrderModel>> watchAvailableOrders() async* {
-    while (true) {
-      final all = await _fetchOrders();
-      yield all.where((o) =>
-          (o.status == OrderStatus.ready || o.status == OrderStatus.accepted) &&
-          o.driverId == null).toList();
-      await Future.delayed(const Duration(seconds: 3));
-    }
-  }
-
-  Stream<List<OrderModel>> watchActiveOrdersList() async* {
-    while (true) {
-      final all = await _fetchOrders();
-      final active = all.where((o) =>
-          o.driverId == _driver.id &&
-          o.status != OrderStatus.delivered &&
-          o.status != OrderStatus.rejected).toList();
-      active.sort((a, b) => _distFromRestaurant(a).compareTo(_distFromRestaurant(b)));
-      _cachedActive = active;
-      yield active;
-      await Future.delayed(const Duration(seconds: 3));
-    }
+  Stream<List<OrderModel>> watchActiveOrdersList() {
+    return _db
+        .from('orders')
+        .stream(primaryKey: ['id'])
+        .map((rows) {
+          final active = rows
+              .map((r) => OrderModel.fromSupabase(r))
+              .where((o) =>
+                  o.driverId == _driver.id &&
+                  o.status != OrderStatus.delivered &&
+                  o.status != OrderStatus.rejected)
+              .toList();
+          active.sort(
+              (a, b) => _distFromRestaurant(a).compareTo(_distFromRestaurant(b)));
+          _cachedActive = active;
+          return active;
+        });
   }
 
   Stream<OrderModel?> watchActiveOrder() {
@@ -181,94 +213,90 @@ class DriverFirebaseService {
 
   // --- Order actions ---
 
-  Future<void> _patch(String path, Map<String, dynamic> body) async {
-    await _client.patch(
-      Uri.parse('$_dbUrl/$path.json'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
-  }
-
   Future<void> acceptOrder(String orderId) async {
-    await _patch('orders/$orderId', {
-      'driverId': _driver.id,
-      'status': OrderStatus.accepted.name,
-    });
+    await _db.from('orders').update({
+      'driver_id': _driver.id,
+      'status':    OrderStatus.accepted.name,
+    }).eq('id', orderId);
   }
 
   Future<void> updateOrderStatus(String orderId, OrderStatus status) async {
     final body = <String, dynamic>{'status': status.name};
     if (status == OrderStatus.pickedUp) {
-      body['pickedUpAt'] = DateTime.now().millisecondsSinceEpoch;
+      body['picked_up_at'] = DateTime.now().millisecondsSinceEpoch;
     }
-    await _patch('orders/$orderId', body);
-
     if (status == OrderStatus.delivered) {
+      body['delivered_at'] = DateTime.now().millisecondsSinceEpoch;
       _checkResetDay();
-      final res = await _client.get(Uri.parse('$_dbUrl/orders/$orderId.json'));
-      if (res.statusCode == 200 && res.body != 'null') {
-        final order = OrderModel.fromMap(
-            Map<String, dynamic>.from(jsonDecode(res.body) as Map));
+      final matching = _cachedActive.where((o) => o.id == orderId);
+      if (matching.isNotEmpty) {
+        final order = matching.first;
         _dailyStats = DailyStats(
-          pedidos: _dailyStats.pedidos + 1,
+          pedidos:  _dailyStats.pedidos + 1,
           earnings: _dailyStats.earnings + order.grandTotal,
         );
         _statsCtrl.add(_dailyStats);
       }
     }
+    await _db.from('orders').update(body).eq('id', orderId);
   }
 
   Future<void> cancelOrder(String orderId) async {
-    await _patch('orders/$orderId', {
-      'driverId': null,
-      'status': OrderStatus.ready.name,
-    });
+    await _db.from('orders').update({
+      'status': OrderStatus.rejected.name,
+    }).eq('id', orderId);
   }
 
   Future<void> confirmAllRecogida() async {
-    final orders = await _fetchOrders();
     final now = DateTime.now().millisecondsSinceEpoch;
-    for (final order in orders) {
-      if (order.driverId == _driver.id &&
-          (order.status == OrderStatus.accepted ||
-              order.status == OrderStatus.ready ||
-              order.status == OrderStatus.preparing)) {
-        await _patch('orders/${order.id}', {
-          'status': OrderStatus.pickedUp.name,
-          'pickedUpAt': now,
-        });
+    for (final order in List<OrderModel>.from(_cachedActive)) {
+      if (order.status == OrderStatus.accepted ||
+          order.status == OrderStatus.ready ||
+          order.status == OrderStatus.preparing) {
+        await _db.from('orders').update({
+          'status':     OrderStatus.pickedUp.name,
+          'picked_up_at': now,
+        }).eq('id', order.id);
       }
     }
   }
 
-  Future<void> startDelivery(String orderId) async {
-    await _patch('orders/$orderId', {
-      'deliveryStartedAt': DateTime.now().millisecondsSinceEpoch,
-    });
-  }
+  Future<void> startDelivery(String orderId) async {}
 
   // --- Driver presence ---
 
   void updateDriverLocation(double lat, double lng) {
     _driver = _driver.copyWith(lat: lat, lng: lng);
-    _patch('drivers/${_driver.id}', {
-      'id': _driver.id,
-      'name': _driver.name,
-      'isOnline': _driver.isOnline,
-      'lat': lat,
-      'lng': lng,
-      'vehicleType': _driver.vehicleType.name,
-    });
+    _db.from('drivers').update({
+      'lat':       lat,
+      'lng':       lng,
+      'is_online': _driver.isOnline,
+    }).eq('id', _driver.id);
   }
 
   Future<void> updateDriverOnlineStatus(bool isOnline) async {
     _driver = _driver.copyWith(isOnline: isOnline);
-    await _patch('drivers/${_driver.id}', {
-      'id': _driver.id,
-      'name': _driver.name,
-      'isOnline': isOnline,
-      'vehicleType': _driver.vehicleType.name,
-    });
+    await _db.from('drivers').update({
+      'is_online': isOnline,
+    }).eq('id', _driver.id);
+  }
+
+  Future<({double? lat, double? lng, String address})> getRestaurantCoords() async {
+    try {
+      final rows = await _db
+          .from('restaurant_settings')
+          .select()
+          .eq('id', 'restaurant');
+      if ((rows as List).isEmpty) return (lat: null, lng: null, address: '');
+      final r = rows.first as Map<String, dynamic>;
+      return (
+        lat:     (r['lat'] as num?)?.toDouble(),
+        lng:     (r['lng'] as num?)?.toDouble(),
+        address: r['address']?.toString() ?? '',
+      );
+    } catch (_) {
+      return (lat: null, lng: null, address: '');
+    }
   }
 
   Future<void> initNotifications() async {}

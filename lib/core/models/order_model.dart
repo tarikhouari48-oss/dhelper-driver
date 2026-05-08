@@ -1,6 +1,6 @@
 enum OrderStatus { pending, accepted, preparing, ready, pickedUp, delivered, rejected }
 
-enum PaymentType { cash, card, online }
+enum PaymentType { cash, card, bizum }
 
 class FoodItem {
   final String name;
@@ -101,6 +101,33 @@ class OrderModel {
         'pickedUpAt': pickedUpAt?.millisecondsSinceEpoch,
         'deliveryStartedAt': deliveryStartedAt?.millisecondsSinceEpoch,
       };
+
+  factory OrderModel.fromSupabase(Map<String, dynamic> r) => OrderModel(
+        id:              r['id']?.toString() ?? '',
+        customerName:    r['customer_name']?.toString() ?? '',
+        phoneNumber:     r['phone_number']?.toString() ?? '',
+        deliveryAddress: r['delivery_address']?.toString() ?? '',
+        items: (r['items'] as List<dynamic>? ?? [])
+            .map((i) => FoodItem.fromJson(Map<String, dynamic>.from(i as Map)))
+            .toList(),
+        status: OrderStatus.values.firstWhere(
+          (s) => s.name == r['status'],
+          orElse: () => OrderStatus.pending,
+        ),
+        paymentType: PaymentType.values.firstWhere(
+          (p) => p.name == r['payment_type'],
+          orElse: () => PaymentType.cash,
+        ),
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+            (r['created_at'] as num?)?.toInt() ?? 0),
+        operatorId:  r['operator_id']?.toString() ?? 'local',
+        driverId:    r['driver_id']?.toString(),
+        deliveryLat: (r['delivery_lat'] as num?)?.toDouble(),
+        deliveryLng: (r['delivery_lng'] as num?)?.toDouble(),
+        pickedUpAt: r['picked_up_at'] != null
+            ? DateTime.fromMillisecondsSinceEpoch((r['picked_up_at'] as num).toInt())
+            : null,
+      );
 
   factory OrderModel.fromMap(Map<String, dynamic> m) => OrderModel(
         id: m['id']?.toString() ?? '',

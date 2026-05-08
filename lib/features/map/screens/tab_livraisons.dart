@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
+import 'dart:ui_web' as ui_web;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:go_router/go_router.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:driver_app/l10n/app_localizations.dart';
 import '../../../core/services/firebase_service.dart';
@@ -12,13 +15,19 @@ import '../providers/location_provider.dart';
 import '../../orders/providers/orders_provider.dart';
 import '../../../core/models/order_model.dart';
 
+final _restRowProvider = StreamProvider.autoDispose<Map<String, dynamic>?>((ref) {
+  return Supabase.instance.client
+      .from('restaurant_settings')
+      .stream(primaryKey: ['id'])
+      .map((rows) => rows.isEmpty ? null : Map<String, dynamic>.from(rows.first as Map));
+});
+
 const _blue = Color(0xFF2563EB);
 const _restLat = DriverFirebaseService.restaurantLat;
 const _restLng = DriverFirebaseService.restaurantLng;
 
 class LivraisonsTab extends ConsumerStatefulWidget {
-  final MapController mapController;
-  const LivraisonsTab({super.key, required this.mapController});
+  const LivraisonsTab({super.key});
 
   @override
   ConsumerState<LivraisonsTab> createState() => _LivraisonsTabState();
@@ -56,7 +65,6 @@ class _LivraisonsTabState extends ConsumerState<LivraisonsTab> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
-    final positionAsync = ref.watch(positionStreamProvider);
     final activeOrders = ref.watch(activeOrdersListProvider).valueOrNull ?? [];
     final availableOrders = ref.watch(availableOrdersProvider).valueOrNull ?? [];
     final isOnline = ref.watch(isOnlineProvider);
@@ -95,69 +103,10 @@ class _LivraisonsTabState extends ConsumerState<LivraisonsTab> {
     return Stack(
       children: [
         // ── Map ───────────────────────────────────────────────────
-        positionAsync.when(
-          data: (position) {
-            final driverPt = LatLng(position.latitude, position.longitude);
-            return FlutterMap(
-              mapController: widget.mapController,
-              options: MapOptions(initialCenter: driverPt, initialZoom: 15),
-              children: [
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.repartidor.driver_app',
-                ),
-                CircleLayer(
-                  circles: [
-                    CircleMarker(
-                      point: const LatLng(_restLat, _restLng),
-                      radius: 500,
-                      useRadiusInMeter: true,
-                      color: Colors.blue.withAlpha(18),
-                      borderColor: Colors.blue.withAlpha(120),
-                      borderStrokeWidth: 1.5,
-                    ),
-                  ],
-                ),
-                MarkerLayer(
-                  markers: [
-                    Marker(
-                      point: driverPt,
-                      width: 40, height: 40,
-                      child: const Icon(Icons.navigation, color: _blue, size: 36),
-                    ),
-                    Marker(
-                      point: const LatLng(_restLat, _restLng),
-                      width: 36, height: 36,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: _blue, width: 2),
-                          boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black26)],
-                        ),
-                        child: const Icon(Icons.storefront, color: _blue, size: 20),
-                      ),
-                    ),
-                    ...activeOrders.where((o) => o.deliveryLat != null).map((o) => Marker(
-                          point: LatLng(o.deliveryLat!, o.deliveryLng!),
-                          width: 20, height: 20,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: _blue,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                              boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black38)],
-                            ),
-                          ),
-                        )),
-                  ],
-                ),
-              ],
-            );
-          },
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(child: Text('$e')),
-        ),
+        Positioned.fill(child: _LeafletMap(
+          activeOrders: activeOrders,
+          restRow: ref.watch(_restRowProvider).valueOrNull,
+        )),
 
         // ── Floating squares for available orders ─────────────────
         if (isOnline && availableOrders.isNotEmpty)
@@ -209,23 +158,6 @@ class _LivraisonsTabState extends ConsumerState<LivraisonsTab> {
                 ),
               ),
             ),
-          ),
-        ),
-
-        // ── Recenter button ───────────────────────────────────────
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 300),
-          bottom: hasActive ? 260 : (isOnline ? 160 : 110),
-          right: 12,
-          child: FloatingActionButton.small(
-            heroTag: 'recenter',
-            backgroundColor: Colors.white,
-            foregroundColor: Colors.black87,
-            onPressed: () {
-              final pos = ref.read(positionStreamProvider).valueOrNull;
-              if (pos != null) widget.mapController.move(LatLng(pos.latitude, pos.longitude), 15);
-            },
-            child: const Icon(Icons.my_location),
           ),
         ),
 
@@ -548,12 +480,10 @@ class _MultiOrderPanelState extends ConsumerState<_MultiOrderPanel> {
             : null,
         onCallStarted: isPickedUp ? () => firebase.startDelivery(order.id) : null,
         lockedMessage: lockedMessage,
-        onCancel: isPickedUp
-            ? () {
-                firebase.cancelOrder(order.id);
-                Navigator.pop(ctx);
-              }
-            : null,
+        onCancel: () {
+          firebase.cancelOrder(order.id);
+          Navigator.pop(ctx);
+        },
       ),
     );
   }
@@ -641,7 +571,7 @@ class _ActiveOrderTile extends StatelessWidget {
                         ),
                         const SizedBox(width: 3),
                         Text(
-                          expired ? '¡Puede cancelar!' : _countdown,
+                          expired ? 'Tiempo excedido' : _countdown,
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.bold,
@@ -743,7 +673,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
     return (600 - elapsed).clamp(0, 600);
   }
 
-  bool get _canCancel => _callStartedAt != null && _remainingSeconds <= 0;
+  bool get _canCancel => true;
 
   String get _countdown {
     final r = _remainingSeconds;
@@ -767,7 +697,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Cancelar pedido'),
-        content: Text('¿Cancelar el pedido de ${widget.order.customerName}? Volverá a estar disponible.'),
+        content: Text('¿Cancelar el pedido de ${widget.order.customerName}? El pedido quedará cancelado y el operador lo verá como cancelado.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -868,7 +798,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
                           ),
                           const SizedBox(width: 3),
                           Text(
-                            expired ? '¡Puede cancelar!' : _countdown,
+                            expired ? 'Tiempo excedido' : _countdown,
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
@@ -961,7 +891,11 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
             ),
             const SizedBox(height: 4),
             Text(
-              order.paymentType == PaymentType.cash ? '💵 Pago en efectivo' : '💳 Pago con tarjeta',
+              switch (order.paymentType) {
+              PaymentType.cash   => '💵 Pago en efectivo',
+              PaymentType.card   => '💳 Pago con tarjeta',
+              PaymentType.bizum  => '📱 Pago con Bizum',
+            },
               style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
             ),
             const SizedBox(height: 20),
@@ -1097,7 +1031,7 @@ class _OrderSquareState extends State<_OrderSquare> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 260),
         curve: Curves.easeOutCubic,
-        width: _expanded ? 270 : 76,
+        width: _expanded ? (MediaQuery.of(context).size.width * 0.72).clamp(220, 310) : 76,
         height: _expanded ? 210 : 76,
         decoration: BoxDecoration(
           color: _expanded ? cs.surface : _blue,
@@ -1205,6 +1139,89 @@ class _ExpandedContent extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Leaflet map background ────────────────────────────────────────────────────
+
+class _LeafletMap extends StatefulWidget {
+  final List<OrderModel> activeOrders;
+  final Map<String, dynamic>? restRow;
+  const _LeafletMap({required this.activeOrders, this.restRow});
+
+  @override
+  State<_LeafletMap> createState() => _LeafletMapState();
+}
+
+class _LeafletMapState extends State<_LeafletMap> {
+  static bool _registered = false;
+  static html.IFrameElement? _iframe;
+  static const _viewType = 'driver-leaflet-map';
+  bool _iframeReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_registered) {
+      _registered = true;
+      final origin = html.window.location.origin;
+      final src = '$origin/map.html?lat=$_restLat&lng=$_restLng&zoom=14&color=%232563EB';
+      ui_web.platformViewRegistry.registerViewFactory(_viewType, (id) {
+        _iframe = html.IFrameElement()
+          ..src = src
+          ..style.border = 'none'
+          ..style.width = '100%'
+          ..style.height = '100%';
+        return _iframe!;
+      });
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _updateMarkers();
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (mounted) {
+        _iframeReady = true;
+        _sendRestaurantRow(widget.restRow);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(_LeafletMap old) {
+    super.didUpdateWidget(old);
+    _updateMarkers();
+    if (_iframeReady && widget.restRow != old.restRow) {
+      _sendRestaurantRow(widget.restRow);
+    }
+  }
+
+  void _sendRestaurantRow(Map<String, dynamic>? r) {
+    if (r == null) return;
+    final lat = (r['lat'] as num?)?.toDouble();
+    final lng = (r['lng'] as num?)?.toDouble();
+    if (lat == null) return;
+    _iframe?.contentWindow?.postMessage(
+      jsonEncode({'type': 'setRestaurant', 'lat': lat, 'lng': lng, 'address': r['address'] ?? ''}),
+      '*',
+    );
+  }
+
+  void _updateMarkers() {
+    final markers = widget.activeOrders
+        .where((o) => o.deliveryLat != null)
+        .map((o) => {
+              'lat': o.deliveryLat!,
+              'lng': o.deliveryLng!,
+              'color': '#EF4444',
+              'label': o.customerName.split(' ').first,
+            })
+        .toList();
+    _iframe?.contentWindow?.postMessage(
+      jsonEncode({'type': 'setMarkers', 'markers': markers}),
+      '*',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => HtmlElementView(viewType: _viewType);
 }
 
 // ── Stats badge ───────────────────────────────────────────────────────────────
